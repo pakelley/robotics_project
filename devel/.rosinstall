@@ -1,0 +1,2 @@
+- setup-file:
+    local-name: /mnt/hgfs/proj/devel/setup.sh

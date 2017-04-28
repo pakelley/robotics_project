@@ -1,0 +1,2 @@
+pl_tracker
+-DCATKIN_DEVEL_PREFIX=/mnt/hgfs/proj/devel -DCMAKE_INSTALL_PREFIX=/mnt/hgfs/proj/install -G Unix Makefiles

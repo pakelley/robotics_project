@@ -1,0 +1,8 @@
+prefix=/mnt/hgfs/proj/devel
+
+Name: pl_tracker
+Description: Description of pl_tracker
+Version: 0.0.0
+Cflags: 
+Libs: -L/mnt/hgfs/proj/devel/lib 
+Requires: 
