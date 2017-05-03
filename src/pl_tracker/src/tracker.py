@@ -48,26 +48,22 @@ class Tracker:
             #of_raw is the raw optical flow vectors
             of_raw = self.opflow(cv_im_down)
             of_im  = self.of_image_conv(of_raw)
-            print type(of_im)
 
             #PIPELINE_02: Edge Image of the Optical Flow
             of_edge_im     = (cv2.Canny(of_im,50,100))
-            print type(of_edge_im)
             of_edge_im_col = cv2.cvtColor(of_edge_im, cv2.COLOR_GRAY2BGR)
-            print type(of_edge_im_col)
         
             #PIPELINE_03: Mask Optical Flow Image
             # Regular background subtraction
             fg_im, bg_im, fg_mask, bg_mask = self.bg_subtract(cv_im_down, self.fgbg)
 
             # Edge-based background subtraction
-            (fg_edge_im, dg_edge_im,
-                 fg_edge_mask, bg_edge_mask) = self.bg_subtract(cv2.Canny(cv_im_down,100,200), self.fgbg_edge)
+            # (fg_edge_im, bg_edge_im, fg_edge_mask, bg_edge_mask) = self.bg_subtract(cv2.Canny(cv_im,100,200), self.fgbg_edge)
+            (fg_edge_im, bg_edge_im, fg_edge_mask, bg_edge_mask) = self.bg_subtract(cv2.Canny(cv_im_down,100,200), self.fgbg_edge)
              
             # of_mask_im = 
 
             #PIPELINE_04: Optical Flow Mean Calculation
-            print type(of_im)
             mean_opflow = np.mean(of_im)
 
             #PIPELINE_05: Optical Flow Mean Subtraction
@@ -83,14 +79,18 @@ class Tracker:
         except CvBridgeError as e:
             print e
 
-        self.publish(fg_im, fg_edge_im, of_im, of_edge_im_col) # , of_mask_im, of_sub_im, thresh_sub_im, ptcl_im, ptcl_overlay_im
+        try:
+            self.publish(fg_im, fg_edge_im, of_im, of_edge_im_col) # , of_mask_im, of_sub_im, thresh_sub_im, ptcl_im, ptcl_overlay_im
+        except CvBridgeError as e:
+            print e
+            
 
     def bg_subtract(self, im, bg_subtractor):
-            fg_mask = bg_subtractor.apply(im)
-            bg_mask = cv2.bitwise_not(fg_mask)
-            fg_im   = cv2.bitwise_and(im,im,mask = fg_mask)
-            bg_im   = cv2.bitwise_and(im,im,mask = bg_mask)
-            return fg_im, bg_im, fg_mask, bg_mask
+        fg_mask = bg_subtractor.apply(im)
+        bg_mask = cv2.bitwise_not(fg_mask)
+        fg_im   = cv2.bitwise_and(im,im,mask = fg_mask)
+        bg_im   = cv2.bitwise_and(im,im,mask = bg_mask)
+        return (fg_im, bg_im, fg_mask, bg_mask)
 
     #downscaling of an image by 50% in both dimensions (gaussian)
     def downscale(self, opencv_image):
@@ -105,7 +105,7 @@ class Tracker:
         else:
             #of_val = cv2.optflow.calcOpticalFlowSF(self.prev_cv_im, next_image, 3, 2, 10)
             of_val = cv2.calcOpticalFlowFarneback(self.prev_cv_im,next_cv_im,None,.5,3,15,3,7,1.5,0)
-            self.prev_cv_im = next_cv_im
+        self.prev_cv_im = next_cv_im
         return of_val
 
     #conversion from optical flow rawdata to image
@@ -122,18 +122,19 @@ class Tracker:
 
     def publish(self, fg_im, fg_edge_im, of_im, of_edge_im_col):
         # Publish streams
-        try:
-            self.pub_raw_im.publish(      self.bridge.cv2_to_imgmsg(fg_im,           "bgr8"))
-            self.pub_edge.publish(        self.bridge.cv2_to_imgmsg(fg_edge_im,      "bgr8"))
-            self.pub_opflow.publish(      self.bridge.cv2_to_imgmsg(of_im,           "bgr8"))
-            self.pub_opflow_edge.publish( self.bridge.cv2_to_imgmsg(of_edge_im_col,  "bgr8"))
-            # self.pub_opflow_sub.publish(  self.bridge.cv2_to_imgmsg(of_mask_im,      "bgr8")) #TODO
-            # self.pub_opflow_sub.publish(  self.bridge.cv2_to_imgmsg(of_sub_im,       "bgr8"))
-            # self.pub_thresh_sub.publish(  self.bridge.cv2_to_imgmsg(thresh_sub_im,   "bgr8")) #TODO
-            # self.pub_ptcls.publish(       self.bridge.cv2_to_imgmsg(ptcl_im,         "bgr8")) #TODO
-            # self.pub_ptcl_overlay.publish(self.bridge.cv2_to_imgmsg(ptcl_overlay_im, "bgr8")) #TODO
-        except CvBridgeError as e:
-            print e
+        
+        fg_edge_col = cv2.cvtColor(fg_edge_im,cv2.COLOR_GRAY2BGR)
+            
+        self.pub_raw_im.publish(      self.bridge.cv2_to_imgmsg(fg_im,           "bgr8"))
+        self.pub_edge.publish(        self.bridge.cv2_to_imgmsg(fg_edge_col,     "bgr8"))
+        self.pub_opflow.publish(      self.bridge.cv2_to_imgmsg(of_im,           "bgr8"))
+        self.pub_opflow_edge.publish( self.bridge.cv2_to_imgmsg(of_edge_im_col,  "bgr8"))
+        # self.pub_opflow_sub.publish(  self.bridge.cv2_to_imgmsg(of_mask_im,      "bgr8")) #TODO
+        # self.pub_opflow_sub.publish(  self.bridge.cv2_to_imgmsg(of_sub_im,       "bgr8"))
+        # self.pub_thresh_sub.publish(  self.bridge.cv2_to_imgmsg(thresh_sub_im,   "bgr8")) #TODO
+        # self.pub_ptcls.publish(       self.bridge.cv2_to_imgmsg(ptcl_im,         "bgr8")) #TODO
+        # self.pub_ptcl_overlay.publish(self.bridge.cv2_to_imgmsg(ptcl_overlay_im, "bgr8")) #TODO
+        
         
 
 
