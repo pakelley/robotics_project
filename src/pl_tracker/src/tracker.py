@@ -19,14 +19,8 @@ class Tracker:
     def __init__(self):
         # Init publishers
         self.pub_raw_im       = rospy.Publisher('tracker/raw_im',       Image, queue_size=50)
-        # self.pub_edge         = rospy.Publisher('tracker/edge',         Image, queue_size=50)
-        # self.pub_opflow       = rospy.Publisher('tracker/opflow',       Image, queue_size=50)
-        # self.pub_opflow_edge  = rospy.Publisher('tracker/opflow_edge',  Image, queue_size=50)
-        # self.pub_opflow_mask  = rospy.Publisher('tracker/opflow_mask',  Image, queue_size=50)
-        # self.pub_opflow_sub   = rospy.Publisher('tracker/opflow_sub',   Image, queue_size=50)
         self.pub_thresh_sub   = rospy.Publisher('tracker/thresh_sub',   Image, queue_size=50)
         self.pub_ptcls        = rospy.Publisher('tracker/ptcls',        Image, queue_size=50)
-        # self.pub_ptcl_overlay = rospy.Publisher('tracker/ptcl_overlay', Image, queue_size=50)
     
         # Init BG Subtractors and cv_bridge
         self.fgbg      = cv2.createBackgroundSubtractorMOG2()
@@ -40,21 +34,21 @@ class Tracker:
 
         self.p0 = None
         # Params for Shi/Tomasi corner detection
-        self.feature_params = dict( maxCorners = 100,
+        self.feature_params = dict( maxCorners = 10,
                                qualityLevel = 0.0001,
                                minDistance = 5,
-                               blockSize = 21 )
+                               blockSize = 11 )
         # Params for Lucas/Kanade optical flow
-        self.lk_params = dict( winSize  = (21, 21),
-                          maxLevel = 4,
+        self.lk_params = dict( winSize  = (17, 17),
+                          maxLevel = 3,
                           criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
 
         self.pfilter = ParticleFilter()
         self.particles = [None]
         self.old_particles = self.particles
-        self.ptcl_dist = 20
+        # self.ptcl_dist = 20
         self.weights = np.zeros(N_PARTICLES)
-        self.sensor_std_err = 0.1
+        # self.sensor_std_err = 0.1
         self.xs = []
         
     
@@ -71,6 +65,8 @@ class Tracker:
         try:
             # Image preprocessing - ROS -> OPENCV bridging and downscaling
             cv_im      = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+            # cv_im = cv2.blur(cv_im, (3,3))
+            # cv_im_down = cv_im
             cv_im_down = self.downscale(cv_im)
             # cv_im_down = self.downscale(cv_im_down)
             # cv_im_down = cv_im
@@ -100,31 +96,32 @@ class Tracker:
             # of_mask_im  = cv2.bitwise_and(of_im, of_im, mask=edge_im)
 
             #PIPELINE_04: Optical Flow Mean Calculation
-            mean_opFlow = np.mean(of_raw, axis=0)
+            # mean_opFlow = np.mean(of_raw, axis=0)
 
             #PIPELINE_05: Optical Flow Mean Subtraction
-            mean_sub = self.mean_sub(of_raw, mean_opFlow)
+            # mean_sub = self.mean_sub(of_raw, mean_opFlow)
             
             #PIPELINE_06: Threshold Mean-Subtracted Image
-            thresh_sub_im = self.threshold_opFlow(mean_sub, mean_opFlow, fg_mask)
+            # thresh_sub_im = self.threshold_opFlow(mean_sub, mean_opFlow, fg_mask)
 
             #PIPELINE_07: Re-Sample Particles
             ptcl_im = self.resample(cv_im_down, fg_mask)
-            # print "Particle Image: "
-            # print ptcl_im.shape
             
+            # Print particles
+            for p in self.particles:
+                cv2.circle( ptcl_im,
+                                (p[0].astype('int8'), p[1].astype('int8')),
+                                2,
+                                (0,0,255),
+                                -1)
+
         except CvBridgeError as e:
             print e
 
         try:
-            self.publish(fg_im, thresh_sub_im, ptcl_im)
+            # self.publish(fg_im, thresh_sub_im, ptcl_im)
+            self.publish(fg_im, cv_im, ptcl_im)
 
-            # self.publish(cv_im_down,
-            #                  fg_edge_im,
-            #                  of_im,
-            #                  of_edge_im_col,
-            #                  of_mask_im,
-            #                  of_im, thresh_sub_im, ptcl_im, ptcl_overlay_im) # 
         except CvBridgeError as e:
             print e
             
@@ -143,9 +140,6 @@ class Tracker:
             (good_new, good_old) = self.getFeaturePoints(img, thresh_im) #TODO: Check feature point coords
 
         # Get feature points
-        # print "Features:"
-        # print good_new.shape #TODO: Pass in estimates and pass them into LK?
-        # print ""
         if good_new != None and len(good_new) > 1:
             good_new = good_new.reshape(-1,2)
             
@@ -155,23 +149,22 @@ class Tracker:
             self.pfilter.predict(self.particles, u=mean, std=std_dev)
 
             # Update
-            # areas = [ thresh_im[x-self.ptcl_dist : x+self.ptcl_dist,
-            #                         y-self.ptcl_dist : y+self.ptcl_dist]
-            #               for (x,y) in good_new.astype('uint8') ]
-            # zs = [np.sum(area) / (self.ptcl_dist * self.ptcl_dist) for area in areas]
-            zs = sp.linalg.norm( np.subtract(good_new, good_old), axis=1)
-            std_err = np.std(zs, axis=0)
+            std_err = np.std(good_new, axis=0)
+            zs = np.zeros((len(good_new), len(self.particles)))
+            for f_ind, feature in enumerate(good_new):
+                for p_ind, particle in enumerate(self.particles[:,0:2]):
+                    zs[f_ind,p_ind] += np.linalg.norm(particle - feature)
+                
+
             self.pfilter.update(self.particles,
                                     self.weights,
                                     z=zs, #TODO: Cross check this with example. Especially dims
-                                    R=std_err, #TODO: Play with this(maybe remove it?)
+                                    R=np.array(std_err), #TODO: Play with this(maybe remove it?)
                                     landmarks=good_new)
 
 
             # Resample if too few effective particles
-            print("neff: %f" % float(self.pfilter.neff(self.weights)))
             if self.pfilter.neff(self.weights) < N_PARTICLES/2:
-                print "Resampling Particles"
                 indices = systematic_resample(self.weights)
                 self.pfilter.resample(self.particles, self.weights, indices)
 
@@ -181,24 +174,9 @@ class Tracker:
             self.xs.append(mu)
 
         
-        # Print particles
-        # print "################################################################"
         ptcl_im = img.copy()
-        for p in self.particles:
-            # print "P:"
-            # print p
-            # if(fg_im[p[0], p[1]] > 0)
-            cv2.circle( ptcl_im,
-                            (p[0].astype('int8'), p[1].astype('int8')),
-                            2,
-                            (0,0,255),
-                            -1)
-
         if good_new != None and len(good_new) > 1:
-            # print "good_new"
-            # print good_new
             for f in good_new:
-                # if(fg_im[p[0], p[1]] > 0)
                 cv2.circle( ptcl_im,
                                 (f[0].astype('int8'), f[1].astype('int8')),
                                 2,
@@ -215,15 +193,9 @@ class Tracker:
         if self.p0 == None:
             print "Sampling Initial Features"
             frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            # self.lk_params["winSize"] = frame_gray.shape
             self.old_frame = frame
             old_gray = cv2.cvtColor(self.old_frame, cv2.COLOR_BGR2GRAY)
             self.p0 = cv2.goodFeaturesToTrack(old_gray, mask = mask_im, **(self.feature_params))
-            # print self.p0
-            # Create a mask image for drawing purposes
-            # self.mask = np.zeros_like(self.old_frame)
-            # Create some random colors
-            # self.color = np.random.randint(0,255,(100,3))
         else:
             # Set frames to use for feature points
             frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -232,6 +204,7 @@ class Tracker:
         # Calculate LK optical flow from Shi/Tomasi features
         p1, st, err = cv2.calcOpticalFlowPyrLK(old_gray, frame_gray, self.p0, None, **(self.lk_params))
 
+        # If there aren't good features, make new ones
         if np.all(st==0) or p1 == None:
             # print "No good old features(2)"
             tmp_features = cv2.goodFeaturesToTrack(old_gray, mask = mask_im, **(self.feature_params))
@@ -242,25 +215,18 @@ class Tracker:
 
         # Select good points
         p1 = p1.reshape(-1, 1, 2)
-        print "p1:"
-        print p1
-        print "st"
-        print st==1
         good_new = np.array(p1[st==1])
-        good_old = self.p0[st==1]
+        good_old = np.array(self.p0[st==1])
         
         # Now update the previous frame and previous points
-        print "Good/New:"
-        print good_new
         self.old_frame = frame.copy()
         self.p0 = good_new.reshape(-1,1,2)
 
 
+        # If there aren't good features, make new ones
         if good_new == None or len(good_new) == 0:
-            # print "No good old features(2)"
             tmp_features = cv2.goodFeaturesToTrack(old_gray, mask = mask_im, **(self.feature_params))
             if np.all(tmp_features != None):
-                # print "There are good new features!!(2)"
                 self.p0 = tmp_features.reshape(-1,1,2)
             return (self.p0, self.p0)
 
@@ -271,18 +237,15 @@ class Tracker:
         good_new = good_new[bound_mask]
         good_old = good_old[bound_mask]
         passed_mask = np.where([mask_im[int(p[0]), int(p[1])] > 0 for p in good_new])
-        # print passed_mask
         good_new = good_new[passed_mask]
         good_old = good_old[passed_mask]
 
+        # If there aren't good features, make new ones
         if len(good_old) == 0:
-            # print "No good old features"
             tmp_features = cv2.goodFeaturesToTrack(old_gray, mask = mask_im, **(self.feature_params))
             if np.all(tmp_features != None):
-                # print "There are good new features!!"
                 self.p0 = tmp_features.reshape(-1,1,2)
             return (self.p0, self.p0)
-        # return good_new
         return (good_new.reshape(-1,1,2), good_old)
 
     def mean_sub(self, vec_img, mean):
@@ -353,25 +316,13 @@ class Tracker:
         hsv[...,2] = cv2.normalize(v,None,0,255,cv2.NORM_MINMAX)
         return hsv
 
-    # def publish(self, fg_im, fg_edge_im, of_im, of_edge_im_col, of_mask_im, of_sub_im, thresh_sub_im, ptcl_im, ptcl_overlay_im): # )
     def publish(self, fg_im, thresh_sub_im, ptcl_im): # )
         # Publish streams
-        
-        # fg_edge_col = cv2.cvtColor(fg_edge_im, cv2.COLOR_GRAY2BGR)
-        # of_sub_vis = cv2.cvtColor(of_sub_im, cv2.COLOR_GRAY2BGR)
-        thresh_sub_vis = cv2.cvtColor(thresh_sub_im, cv2.COLOR_GRAY2BGR)
-        # of_im = cv2.cvtColor(of_im, cv2.COLOR_GRAY2BGR)
-        # of_sub_vis = cv2.cvtColor(of_sub_im,cv2.CV_8UC3)
+        # thresh_sub_vis = cv2.cvtColor(thresh_sub_im, cv2.COLOR_GRAY2BGR)
             
         self.pub_raw_im.publish(      self.bridge.cv2_to_imgmsg(fg_im,           "bgr8"))
-        # self.pub_edge.publish(        self.bridge.cv2_to_imgmsg(fg_edge_col,     "bgr8"))
-        # self.pub_opflow.publish(      self.bridge.cv2_to_imgmsg(of_im,           "bgr8"))
-        # self.pub_opflow_edge.publish( self.bridge.cv2_to_imgmsg(of_edge_im_col,  "bgr8"))
-        # self.pub_opflow_mask.publish(  self.bridge.cv2_to_imgmsg(of_mask_im,      "bgr8"))
-        # self.pub_opflow_sub.publish(  self.bridge.cv2_to_imgmsg(of_sub_vis,       "bgr8"))
-        self.pub_thresh_sub.publish(  self.bridge.cv2_to_imgmsg(thresh_sub_vis,   "bgr8")) #TODO
+        self.pub_thresh_sub.publish(  self.bridge.cv2_to_imgmsg(thresh_sub_im,   "bgr8")) #TODO
         self.pub_ptcls.publish(       self.bridge.cv2_to_imgmsg(ptcl_im,         "bgr8")) #TODO
-        # self.pub_ptcl_overlay.publish(self.bridge.cv2_to_imgmsg(ptcl_overlay_im, "bgr8")) #TODO
         
 
 if __name__ == '__main__':

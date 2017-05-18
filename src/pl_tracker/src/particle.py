@@ -23,27 +23,16 @@ class ParticleFilter:
         N = len(particles)
         p_dim = particles.shape[1] - 1
         # update heading
-        particles[:, 2] += norm(u + (randn(N,p_dim) * (np.sqrt(std)/10)))
+        particles[:, 2] += norm(u + (randn(N,p_dim) * (np.sqrt(std))))
         particles[:, 2] %= 2 * np.pi
         # particles[:, 2] = (np.arctan(dirs[:,1]/dirs[:,0]) + ((randn(N,p_dim)) * (np.sqrt(std)/10)))
         
-        dirs = (u-particles[:,0:2]) + ((randn(N,p_dim)) * (np.sqrt(std)/10))
-        # print("Dirs: ", dirs)
+        dirs = (u-particles[:,0:2]) + ((randn(N,p_dim)) * (np.sqrt(std)))
         dirs /= np.sqrt( np.fabs(dirs) )
-        # norms = norm(dirs, axis=1)
-        # print("Norms: ", norms)
-        # dirs = np.array([d / n for d, n in zip(dirs, norms)])
-        # print("Dirs: ", dirs)
 
         # move in the (noisy) commanded direction
         # dist = (dirs * dt) + (randn(N,p_dim) * (np.sqrt(std)/10))
-        # print("A: ", (dirs * dt) )
-        # print("B: ", (randn(N,p_dim) * (np.sqrt(std)/10)) )
-        # print("u: ", u)
-        # print("u-p: ", dirs)
-        # print("adj var: ", np.sqrt(std)/10)
-        # print("Dist: ", dist)
-        # print("Particles: ", particles)
+        
         # particles[:, 0] += np.cos(particles[:, 2]) * dist[:,0]
         # particles[:, 1] += np.sin(particles[:, 2]) * dist[:,1]
         particles[:, 0] += dirs[:,0] #* dist[:,0]
@@ -55,20 +44,21 @@ class ParticleFilter:
     def update(self, particles, weights, z, R, landmarks):
         weights.fill(1.)
         for i, landmark in enumerate(landmarks):
-            dist = np.linalg.norm(particles[:, 0:2] - landmark, axis=1)
-            # dist = np.linalg.norm(particles[:, 0:2] - landmark, axis=0)
-            # dist = particles[:, 0:2] - landmark
-            # min_ind = np.argmin(dist)
-            # print("Particles: ", particles[:, 0:2])
-            # print("Weights: ", np.array(weights))
-            # print("Dist: ", dist)
-            # print("R: ", np.linalg.norm(R))
-            # print("z[i]: ", np.linalg.norm(z[i]))
-            
-            
-            weights *= scipy.stats.norm(dist, np.linalg.norm(R)).pdf(np.linalg.norm(z[i]))
+            # dist = np.linalg.norm(particles[:, 0:2] - landmark, axis=1)
+            dist = particles[:, 0:2] - landmark
+                        
+            # print("zs: ", z, z.shape)
+            # print("z: ", z[i], z[i].shape)
+            # print("R: ", R, len(R))
+            # print("landmarks: ", landmarks, len(landmarks))
+            # print("Dist: ", dist, len(dist))
+            # # weights *= scipy.stats.norm(dist, np.linalg.norm(R)).pdf(np.linalg.norm(z[i]))
+            # print("Distribution: ", scipy.stats.norm(dist, R))
+            probs = scipy.stats.norm(dist, R).pdf(np.linalg.norm(z[i]))
+            # print("probz: ", probs)
+            weights *= np.linalg.norm(probs, axis=1)
 
-        # print("Update weights: ", weights)
+        # print("Weights: ", weights, len(weights))
         weights /= (sum(weights) + 1.e-300) # normalize(and avoid division by 0)
 
 
@@ -89,8 +79,8 @@ class ParticleFilter:
 
 
     def neff(self, weights):
-        print( "Weights:", weights)
-        return 1. / (np.sum(np.square(weights)) + 1.e-300)
+        # print( "Weights:", weights)
+        return 1. / (np.sum(np.square(weights)) + 1.e-30)
 
 
 
