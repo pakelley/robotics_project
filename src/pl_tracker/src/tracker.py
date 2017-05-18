@@ -5,13 +5,15 @@
 import rospy
 import numpy as np
 import scipy as sp
+from scipy.linalg import norm
 from sensor_msgs.msg import Image
 import cv2
 from cv_bridge import CvBridge, CvBridgeError
+from filterpy.monte_carlo import systematic_resample
 
 from particle import ParticleFilter
 
-N_PARTICLES = 100
+N_PARTICLES = 10
 
 class Tracker:
     def __init__(self):
@@ -39,12 +41,12 @@ class Tracker:
         self.p0 = None
         # Params for Shi/Tomasi corner detection
         self.feature_params = dict( maxCorners = 100,
-                               qualityLevel = 0.3,
-                               minDistance = 7,
-                               blockSize = 7 )
+                               qualityLevel = 0.0001,
+                               minDistance = 5,
+                               blockSize = 21 )
         # Params for Lucas/Kanade optical flow
-        self.lk_params = dict( winSize  = (0, 0),
-                          maxLevel = 2,
+        self.lk_params = dict( winSize  = (21, 21),
+                          maxLevel = 4,
                           criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
 
         self.pfilter = ParticleFilter()
@@ -70,6 +72,8 @@ class Tracker:
             # Image preprocessing - ROS -> OPENCV bridging and downscaling
             cv_im      = self.bridge.imgmsg_to_cv2(msg, "bgr8")
             cv_im_down = self.downscale(cv_im)
+            # cv_im_down = self.downscale(cv_im_down)
+            # cv_im_down = cv_im
 
             #PIPELINE_01: Optical Flow Image
             #of_im is visual representation of opflow
@@ -78,24 +82,25 @@ class Tracker:
             of_im  = self.of_image_conv(of_raw)
 
             #PIPELINE_02: Edge Image of the Optical Flow
-            of_edge_im     = (cv2.Canny(of_im,50,100))
-            of_edge_im_col = cv2.cvtColor(of_edge_im, cv2.COLOR_GRAY2BGR)
+            # of_edge_im     = (cv2.Canny(of_im,50,100))
+            # of_edge_im_col = cv2.cvtColor(of_edge_im, cv2.COLOR_GRAY2BGR)
         
             #PIPELINE_03: Mask Optical Flow Image
             # Regular background subtraction
             fg_im, bg_im, fg_mask, bg_mask = self.bg_subtract(cv_im_down, self.fgbg)
+            # print fg_im[0]
 
             # Edge-based background subtraction
             # (fg_edge_im, bg_edge_im, fg_edge_mask, bg_edge_mask) = self.bg_subtract(cv2.Canny(cv_im,100,200), self.fgbg_edge)
-            edge_im = cv2.Canny(cv_im_down,100,200)
-            (fg_edge_im, bg_edge_im, fg_edge_mask, bg_edge_mask) = self.bg_subtract(edge_im, self.fgbg_edge)
+            # edge_im = cv2.Canny(cv_im_down,100,200)
+            # (fg_edge_im, bg_edge_im, fg_edge_mask, bg_edge_mask) = self.bg_subtract(edge_im, self.fgbg_edge)
              
             # print np.sum(edge_im > 0)
-            of_mask_raw = of_raw[edge_im > 0]# np.logical_and(of_raw, edge_im)
-            of_mask_im  = cv2.bitwise_and(of_im, of_im, mask=edge_im)
+            # of_mask_raw = of_raw[edge_im > 0]# np.logical_and(of_raw, edge_im)
+            # of_mask_im  = cv2.bitwise_and(of_im, of_im, mask=edge_im)
 
             #PIPELINE_04: Optical Flow Mean Calculation
-            mean_opFlow = np.mean(of_mask_raw, axis=0)
+            mean_opFlow = np.mean(of_raw, axis=0)
 
             #PIPELINE_05: Optical Flow Mean Subtraction
             mean_sub = self.mean_sub(of_raw, mean_opFlow)
@@ -104,7 +109,7 @@ class Tracker:
             thresh_sub_im = self.threshold_opFlow(mean_sub, mean_opFlow, fg_mask)
 
             #PIPELINE_07: Re-Sample Particles
-            ptcl_im = self.resample(cv_im_down, thresh_sub_im)
+            ptcl_im = self.resample(cv_im_down, fg_mask)
             # print "Particle Image: "
             # print ptcl_im.shape
             
@@ -112,7 +117,7 @@ class Tracker:
             print e
 
         try:
-            self.publish(cv_im_down, thresh_sub_im, ptcl_im)
+            self.publish(fg_im, thresh_sub_im, ptcl_im)
 
             # self.publish(cv_im_down,
             #                  fg_edge_im,
@@ -124,97 +129,97 @@ class Tracker:
             print e
             
     def n_not_equal(self, A, B):
-        return np.all( [np.equal(a, b) for a, b in zip(A,B)] )
+        flag = np.array([np.not_equal(a, b) for a, b in zip(A,B)]).ravel()
+        return np.any( flag )
     
     def resample(self, img, thresh_im):
-        if (self.n_not_equal(self.particles, self.old_particles)):
-            print "Change before resample"
         # If particles are unset, initialize particle filter
-        if self.particles == None:
+        if self.particles[0] == None:
             print "Sampling Initial Particles"
-            self.particles = self.pfilter.create_uniform_particles((0,img.shape[0]*10), (0,img.shape[1]*10), (0, 2*np.pi), N_PARTICLES)
+            self.particles = self.pfilter.create_uniform_particles((0,img.shape[0]), (0,img.shape[1]), (0, 2*np.pi), N_PARTICLES)
             self.old_particles = self.particles
-            
+            (good_new, good_old) = self.getFeaturePoints(img, thresh_im) #TODO: Check feature point coords
+        else:
+            (good_new, good_old) = self.getFeaturePoints(img, thresh_im) #TODO: Check feature point coords
+
         # Get feature points
-        (good_new, good_old) = self.getFeaturePoints(img) #TODO: Check feature point coords
         # print "Features:"
         # print good_new.shape #TODO: Pass in estimates and pass them into LK?
         # print ""
+        if good_new != None and len(good_new) > 1:
+            good_new = good_new.reshape(-1,2)
             
+            # Predict
+            mean    = np.mean(good_new, axis=0) #TODO: Check these params too
+            std_dev = np.std( good_new, axis=0) #TODO: Probably need to exclude outside of fg mask
+            self.pfilter.predict(self.particles, u=mean, std=std_dev)
 
-        if (self.n_not_equal(self.particles, self.old_particles)):
-            print "Change before predict"
-        # Predict
-        mean    = np.mean(good_new, axis=0) #TODO: Check these params too
-        std_dev = np.std( good_new, axis=0) #TODO: Probably need to exclude outside of fg mask
-        self.pfilter.predict(self.particles, u=mean, std=std_dev)
+            # Update
+            # areas = [ thresh_im[x-self.ptcl_dist : x+self.ptcl_dist,
+            #                         y-self.ptcl_dist : y+self.ptcl_dist]
+            #               for (x,y) in good_new.astype('uint8') ]
+            # zs = [np.sum(area) / (self.ptcl_dist * self.ptcl_dist) for area in areas]
+            zs = sp.linalg.norm( np.subtract(good_new, good_old), axis=1)
+            std_err = np.std(zs, axis=0)
+            self.pfilter.update(self.particles,
+                                    self.weights,
+                                    z=zs, #TODO: Cross check this with example. Especially dims
+                                    R=std_err, #TODO: Play with this(maybe remove it?)
+                                    landmarks=good_new)
 
-        if (self.n_not_equal(self.particles, self.old_particles)):
-            print "Change before update"
-        # Update
-        areas = [ thresh_im[x-self.ptcl_dist : x+self.ptcl_dist,
-                                y-self.ptcl_dist : y+self.ptcl_dist]
-                      for (x,y) in good_new.astype('uint8') ]
-        # zs = [np.sum(area) / (self.ptcl_dist * self.ptcl_dist) for area in areas]
-        zs = sp.linalg.norm( np.subtract(good_new, good_old), axis=1)
-        std_err = np.std(zs, axis=0)
-        self.pfilter.update(self.particles,
-                                self.weights,
-                                z=zs, #TODO: Cross check this with example. Especially dims
-                                R=std_err, #TODO: Play with this(maybe remove it?)
-                                landmarks=good_new)
 
-        if (self.n_not_equal(self.particles, self.old_particles)):
-            print "Change before resampleresample"
-        # Resample if too few effective particles
-        if self.pfilter.neff(self.weights) < N_PARTICLES/2:
-            print "Resampling Particles"
-            indices = systematic_resample(self.weights)
-            resample(self.particles, self.weights, indices)
+            # Resample if too few effective particles
+            print("neff: %f" % float(self.pfilter.neff(self.weights)))
+            if self.pfilter.neff(self.weights) < N_PARTICLES/2:
+                print "Resampling Particles"
+                indices = systematic_resample(self.weights)
+                self.pfilter.resample(self.particles, self.weights, indices)
 
-        if (self.n_not_equal(self.particles, self.old_particles)):
-            print "Change before estimate"
-        # Estimate position
-        mu, var = self.pfilter.estimate(self.particles, self.weights)
-        self.xs.append(mu)
 
-        if (self.n_not_equal(self.particles, self.old_particles)):
-            print "Change before print"
+            # Estimate position
+            mu, var = self.pfilter.estimate(self.particles, self.weights)
+            self.xs.append(mu)
+
+        
         # Print particles
+        # print "################################################################"
         ptcl_im = img.copy()
         for p in self.particles:
+            # print "P:"
+            # print p
             # if(fg_im[p[0], p[1]] > 0)
             cv2.circle( ptcl_im,
-                            (p[0].astype('int8')+200, p[1].astype('int8')+100),
+                            (p[0].astype('int8'), p[1].astype('int8')),
                             2,
                             (0,0,255),
                             -1)
 
-        for f in good_new:
-            # if(fg_im[p[0], p[1]] > 0)
-            cv2.circle( ptcl_im,
-                            (f[0].astype('int8'), f[1].astype('int8')),
-                            2,
-                            (0,255,0),
-                            -1)
+        if good_new != None and len(good_new) > 1:
+            # print "good_new"
+            # print good_new
+            for f in good_new:
+                # if(fg_im[p[0], p[1]] > 0)
+                cv2.circle( ptcl_im,
+                                (f[0].astype('int8'), f[1].astype('int8')),
+                                2,
+                                (0,255,0),
+                                -1)
 
 
-        if (self.n_not_equal(self.particles, self.old_particles)):
-            print "Change before return"
-        self.old_particles = self.particles
         return ptcl_im
 
 
-    def getFeaturePoints(self, frame):
+    def getFeaturePoints(self, frame, mask_im):
 
         # If initial points are unset, initialize optical flow
         if self.p0 == None:
             print "Sampling Initial Features"
             frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            self.lk_params["winSize"] = frame_gray.shape
+            # self.lk_params["winSize"] = frame_gray.shape
             self.old_frame = frame
             old_gray = cv2.cvtColor(self.old_frame, cv2.COLOR_BGR2GRAY)
-            self.p0 = cv2.goodFeaturesToTrack(old_gray, mask = None, **(self.feature_params))
+            self.p0 = cv2.goodFeaturesToTrack(old_gray, mask = mask_im, **(self.feature_params))
+            # print self.p0
             # Create a mask image for drawing purposes
             # self.mask = np.zeros_like(self.old_frame)
             # Create some random colors
@@ -227,16 +232,58 @@ class Tracker:
         # Calculate LK optical flow from Shi/Tomasi features
         p1, st, err = cv2.calcOpticalFlowPyrLK(old_gray, frame_gray, self.p0, None, **(self.lk_params))
 
+        if np.all(st==0) or p1 == None:
+            # print "No good old features(2)"
+            tmp_features = cv2.goodFeaturesToTrack(old_gray, mask = mask_im, **(self.feature_params))
+            if np.all(tmp_features != None):
+                # print "There are good new features!!(2)"
+                self.p0 = tmp_features.reshape(-1,2)
+            return (self.p0, self.p0)
+
         # Select good points
-        good_new = p1[st==1]
+        p1 = p1.reshape(-1, 1, 2)
+        print "p1:"
+        print p1
+        print "st"
+        print st==1
+        good_new = np.array(p1[st==1])
         good_old = self.p0[st==1]
         
         # Now update the previous frame and previous points
+        print "Good/New:"
+        print good_new
         self.old_frame = frame.copy()
         self.p0 = good_new.reshape(-1,1,2)
 
+
+        if good_new == None or len(good_new) == 0:
+            # print "No good old features(2)"
+            tmp_features = cv2.goodFeaturesToTrack(old_gray, mask = mask_im, **(self.feature_params))
+            if np.all(tmp_features != None):
+                # print "There are good new features!!(2)"
+                self.p0 = tmp_features.reshape(-1,1,2)
+            return (self.p0, self.p0)
+
+
+        good_new = np.array(good_new)
+        inbounds_arr = np.array([np.less(p, np.array(mask_im.shape)) for p in good_new])
+        bound_mask =  np.logical_and(inbounds_arr[:,0], inbounds_arr[:,1])
+        good_new = good_new[bound_mask]
+        good_old = good_old[bound_mask]
+        passed_mask = np.where([mask_im[int(p[0]), int(p[1])] > 0 for p in good_new])
+        # print passed_mask
+        good_new = good_new[passed_mask]
+        good_old = good_old[passed_mask]
+
+        if len(good_old) == 0:
+            # print "No good old features"
+            tmp_features = cv2.goodFeaturesToTrack(old_gray, mask = mask_im, **(self.feature_params))
+            if np.all(tmp_features != None):
+                # print "There are good new features!!"
+                self.p0 = tmp_features.reshape(-1,1,2)
+            return (self.p0, self.p0)
         # return good_new
-        return (good_new, good_old)
+        return (good_new.reshape(-1,1,2), good_old)
 
     def mean_sub(self, vec_img, mean):
         of_sub_raw = np.subtract(vec_img, mean)
